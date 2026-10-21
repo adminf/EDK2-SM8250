@@ -97,11 +97,9 @@
 
   gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString|L"Alpha"
 
-  # System Memory (4GB)
+  # System Memory (8GB, enuma)
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000
-  gArmTokenSpaceGuid.PcdSystemMemorySize|0xe0000000
-  # System Memory (8GB)
-  #gArmTokenSpaceGuid.PcdSystemMemorySize|0x200000000
+  gArmTokenSpaceGuid.PcdSystemMemorySize|0x200000000
 
   # We only boot one processor here!
   gArmPlatformTokenSpaceGuid.PcdCoreCount|1
@@ -140,8 +138,8 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable|TRUE
 
   gSM8250TokenSpaceGuid.PcdMipiFrameBufferAddress|0x9c000000
-  gSM8250TokenSpaceGuid.PcdMipiFrameBufferWidth|1080
-  gSM8250TokenSpaceGuid.PcdMipiFrameBufferHeight|2400
+  gSM8250TokenSpaceGuid.PcdMipiFrameBufferWidth|1600
+  gSM8250TokenSpaceGuid.PcdMipiFrameBufferHeight|2560
 
   gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiExposedTableVersions|0x20
 

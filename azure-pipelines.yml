@@ -2,9 +2,15 @@ trigger:
 - master
 
 pool:
-  vmImage: 'Ubuntu-16.04'
+  vmImage: 'ubuntu-22.04'
 
 steps:
 - script: |
     ./ci-build.sh
   displayName: 'ci-build'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathtoPublish: 'boot_uefi.img'
+    artifactName: 'uefi-enuma'
+  condition: succeededOrFailed()
