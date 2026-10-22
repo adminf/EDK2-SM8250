@@ -150,6 +150,11 @@ READ_LOCK_STATUS   = TRUE
   INF SM8250/SM8250Dxe/SM8250Dxe.inf
   INF SM8250/SimpleFbDxe/SimpleFbDxe.inf
 
+  #
+  # Auto-boot \EFI\BOOT\BOOTAA64.EFI as soon as a FAT volume is mounted
+  #
+  INF SM8250/AutoBootDxe/AutoBootDxe.inf
+
 
   FILE DRIVER = 0d35cd8e-97ea-4f9a-96af-0f0d89f76567 {
     SECTION DXE_DEPEX = Dxe/UFSDxe/UFSDxe.depex

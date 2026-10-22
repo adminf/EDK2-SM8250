@@ -210,6 +210,7 @@
 
   SM8250/SM8250Dxe/SM8250Dxe.inf
   SM8250/SimpleFbDxe/SimpleFbDxe.inf
+  SM8250/AutoBootDxe/AutoBootDxe.inf
 
   #
   # USB Host Support

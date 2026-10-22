@@ -1,0 +1,37 @@
+## @file
+#  AutoBootDxe.inf
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = AutoBootDxe
+  FILE_GUID                      = 3b8d2a41-6c9e-4f0d-8a55-1e2f3a4b5c6d
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = AutoBootDxeEntry
+
+[Sources]
+  AutoBootDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiLib
+  UefiBootServicesTableLib
+  DevicePathLib
+  DebugLib
+
+[Protocols]
+  gEfiSimpleFileSystemProtocolGuid     ## CONSUMES
+  gEfiDevicePathProtocolGuid           ## CONSUMES
+
+[Guids]
+  gEfiEventReadyToBootGuid             ## SOMETIMES_CONSUMES
+
+[Depex]
+  TRUE
