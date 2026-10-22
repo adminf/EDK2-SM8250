@@ -170,24 +170,9 @@ READ_LOCK_STATUS   = TRUE
 
 
   #
-  # USB Host Support
+  # USB / Fastboot removed: not adapted for enuma, causes async SError at BDS.
+  # Deployment data lives on internal UFS, no USB needed.
   #
-  INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
-
-  #
-  # USB Mass Storage Support
-  #
-  INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
-
-  #
-  # USB Peripheral Support
-  #
-  INF EmbeddedPkg/Drivers/AndroidFastbootTransportUsbDxe/FastbootTransportUsbDxe.inf
-
-  #
-  # Fastboot
-  #
-  INF EmbeddedPkg/Application/AndroidFastboot/AndroidFastbootApp.inf
 
   #
   # FAT filesystem + GPT/MBR partitioning
