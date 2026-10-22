@@ -29,6 +29,7 @@
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid     ## CONSUMES
   gEfiDevicePathProtocolGuid           ## CONSUMES
+  gEfiBlockIoProtocolGuid              ## CONSUMES
 
 [Guids]
   gEfiEventReadyToBootGuid             ## SOMETIMES_CONSUMES
