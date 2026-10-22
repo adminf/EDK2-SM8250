@@ -31,6 +31,7 @@ typedef struct {
   CHAR16  Root[12][24];
   UINTN   RootCount;
   CHAR16  BootFile[48];
+  CHAR16  DpText[64];
   BOOLEAN OpenVolFail;
   CHAR16  OpenVolErr[24];
 } VOL_INFO;
@@ -164,6 +165,71 @@ DumpBpb (
 }
 
 //
+// Scan the first 16MB of the ESP partition for FAT boot-sector signatures.
+//
+STATIC
+VOID
+ScanEsp (
+  IN EFI_BLOCK_IO_PROTOCOL  *Bio
+  )
+{
+  EFI_STATUS  Status;
+  UINT32      Bs;
+  UINT8       *Buf;
+  UINT32      i;
+  UINTN       Hits;
+  UINT16      Bps;
+  CHAR8       Asc[9];
+
+  Bs = Bio->Media->BlockSize;
+  if (Bs == 0) {
+    return;
+  }
+
+  Buf = AllocatePool (Bs * 4096);
+  if (Buf == NULL) {
+    Print (L"    scan alloc FAIL\n");
+    return;
+  }
+
+  Status = Bio->ReadBlocks (Bio, Bio->Media->MediaId, 0, Bs * 4096, Buf);
+  if (EFI_ERROR (Status)) {
+    Print (L"    scan read FAIL %r\n", Status);
+    FreePool (Buf);
+    return;
+  }
+
+  Print (L"    LBA0[0..15]: ");
+  DumpAscii (Buf, 16);
+  Print (L"\n");
+
+  Hits = 0;
+  for (i = 0; i < 4096; i++) {
+    UINT8  *P;
+
+    P   = Buf + (UINTN)i * Bs;
+    Bps = *(UINT16 *)(P + 0x0B);
+    if (((P[510] == 0x55) && (P[511] == 0xAA)) || (Bps == 512)) {
+      CopyMem (Asc, P + 3, 8);
+      Asc[8] = 0;
+      Print (
+        L"    FAT sig@LBA%d OEM:%a bps=%d fatsz=%d totsec=%d\n",
+        i, Asc, Bps, *(UINT32 *)(P + 0x24), *(UINT32 *)(P + 0x20)
+        );
+      if (++Hits >= 5) {
+        break;
+      }
+    }
+  }
+
+  if (Hits == 0) {
+    Print (L"    no FAT sig in first %d LBAs\n", 4096);
+  }
+
+  FreePool (Buf);
+}
+
+//
 // GPT header + entries p33..p39 from the whole-disk handle.
 //
 STATIC
@@ -208,7 +274,7 @@ DumpGpt (
 
   EntryLba = *(UINT64 *)(Hdr + 0x48);
   Num      = *(UINT32 *)(Hdr + 0x50);
-  Esz      = *(UINT32 *)(Hdr + 0x58);
+  Esz      = *(UINT32 *)(Hdr + 0x54);
   Print (L"  GPT OK: %d x %d B @LBA%lu\n", Num, Esz, EntryLba);
 
   if ((Esz == 0) || (Esz > 1024) || (Num > 128)) {
@@ -307,6 +373,10 @@ DeepDiag (
 
     DumpBpb (Bio);
 
+    if (GotPart && (PartStart == 31522816)) {
+      ScanEsp (Bio);
+    }
+
     if (Cap > MaxCap) {
       MaxCap = Cap;
       Disk   = Bio;
@@ -324,15 +394,19 @@ DeepDiag (
 STATIC
 VOID
 ExamineVolume (
-  IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs,
-  IN UINTN                            Index
+  IN EFI_HANDLE                      Handle,
+  IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Sfs,
+  IN UINTN                           Index
   )
 {
-  EFI_STATUS         Status;
-  EFI_FILE_PROTOCOL  *Root;
-  EFI_FILE_PROTOCOL  *File;
-  CHAR16             Buf[64];
-  UINTN              Size;
+  EFI_STATUS                Status;
+  EFI_FILE_PROTOCOL         *Root;
+  EFI_FILE_PROTOCOL         *File;
+  CHAR16                    Buf[64];
+  UINTN                     Size;
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  CHAR16                    *Text;
+  UINTN                     k;
 
   if (Index >= MAXVOL) {
     return;
@@ -340,6 +414,20 @@ ExamineVolume (
 
   mInfo[Index].BootFile[0] = 0;
   mInfo[Index].BootOk      = FALSE;
+  mInfo[Index].DpText[0]   = 0;
+
+  Status = gBS->HandleProtocol (Handle, &gEfiDevicePathProtocolGuid, (VOID **)&Dp);
+  if (!EFI_ERROR (Status)) {
+    Text = ConvertDevicePathToText (Dp, FALSE, FALSE);
+    if (Text != NULL) {
+      for (k = 0; (k < 63) && (Text[k] != 0); k++) {
+        mInfo[Index].DpText[k] = Text[k];
+      }
+
+      mInfo[Index].DpText[k] = 0;
+      FreePool (Text);
+    }
+  }
 
   Status = Sfs->OpenVolume (Sfs, &Root);
   if (EFI_ERROR (Status)) {
@@ -427,7 +515,7 @@ ParkWithSummary (
       Print (L" %s |", mInfo[i].Root[j]);
     }
 
-    Print (L"\n  BOOTAA64: %s\n", mInfo[i].BootFile);
+    Print (L"\n  BOOTAA64: %s\n  DP: %s\n", mInfo[i].BootFile, mInfo[i].DpText);
   }
 
   Print (L"\n-- block view --\n");
@@ -490,7 +578,7 @@ TryBootAllVolumes (
       continue;
     }
 
-    ExamineVolume (Sfs, Index);
+    ExamineVolume (Handles[Index], Sfs, Index);
   }
 
   for (Index = 0; Index < Count && Index < MAXVOL; Index++) {
