@@ -1,11 +1,12 @@
 /** @file
-  AutoBootDxe v4 - deep diagnostic edition.
+  AutoBootDxe v5 - deep diagnostic, partition-mapping edition.
 
   Tries \EFI\BOOT\BOOTAA64.EFI on every SimpleFileSystem volume. On failure:
-  clears the screen, prints (1) SFS volume summary, (2) raw block-level view:
-  all BlockIo handles >= 1GiB with BPB + first root-dir sector ASCII dump for
-  1..16GiB partitions, (3) whole-disk GPT header + entries p33..p38, then
-  parks forever so the result is easy to photograph.
+  clears the screen and prints (1) SFS summary, (2) every BlockIo >= 1GiB with
+  its device-path partition number / start LBA / size, BPB fields, OEM+fstype,
+  and root-dir sector ASCII when the BPB looks FAT-valid, (3) GPT header and
+  entries p33..p39 (name, start, end) read from the largest handle (whole
+  disk). Parks forever.
 
   Copyright (c) 2026, enuma WoA project. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -60,7 +61,44 @@ DumpAscii (
 }
 
 //
-// Dump BPB of a FAT partition whose BlockIo handle starts at its own LBA0.
+// Pull the MEDIA_PARTITION node out of the handle's device path.
+//
+STATIC
+BOOLEAN
+GetPartitionInfo (
+  IN  EFI_HANDLE  Handle,
+  OUT UINT32      *PartNum,
+  OUT UINT64      *PartStart,
+  OUT UINT64      *PartSize
+  )
+{
+  EFI_STATUS                Status;
+  EFI_DEVICE_PATH_PROTOCOL  *Dp;
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+  BOOLEAN                   Found;
+  UINT8                     *P;
+
+  Status = gBS->HandleProtocol (Handle, &gEfiDevicePathProtocolGuid, (VOID **)&Dp);
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  Found = FALSE;
+  for (Node = Dp; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((Node->Type == MEDIA_DEVICE_PATH) && (Node->SubType == MEDIA_PARTITION_DP) && (DevicePathNodeLength (Node) >= 42)) {
+      P         = (UINT8 *)Node;
+      *PartNum  = *(UINT32 *)(P + 4);
+      *PartStart = *(UINT64 *)(P + 8);
+      *PartSize = *(UINT64 *)(P + 16);
+      Found     = TRUE;
+    }
+  }
+
+  return Found;
+}
+
+//
+// Dump BPB fields of a partition; root-dir ASCII when the BPB is FAT-like.
 //
 STATIC
 VOID
@@ -79,6 +117,7 @@ DumpBpb (
   UINT32      TotSec;
   UINT32      RootClus;
   UINT64      RootLba;
+  CHAR8       Asc[9];
 
   Bs = Bio->Media->BlockSize;
   P  = AllocatePool (Bs * 2);
@@ -93,6 +132,8 @@ DumpBpb (
     return;
   }
 
+  CopyMem (Asc, P + 3, 8);
+  Asc[8] = 0;
   Bps      = *(UINT16 *)(P + 0x0B);
   Spc      = P[0x0D];
   Resv     = *(UINT16 *)(P + 0x0E);
@@ -101,26 +142,21 @@ DumpBpb (
   FatSz    = *(UINT32 *)(P + 0x24);
   RootClus = *(UINT32 *)(P + 0x2C);
 
-  Print (L"    OEM: ");
-  DumpAscii (P + 3, 8);
-  Print (L"\n");
-  Print (
-    L"    bps=%d spc=%d resv=%d nfat=%d fatsz=%d totsec=%d root=%d\n",
-    Bps, Spc, Resv, NumFats, FatSz, TotSec, RootClus
-    );
-  Print (L"    fstype@52: ");
-  DumpAscii (P + 0x52, 8);
-  Print (L"\n");
+  Print (L"    OEM:%a bps=%d spc=%d resv=%d nfat=%d fatsz=%d totsec=%d root=%d\n",
+         Asc, Bps, Spc, Resv, NumFats, FatSz, TotSec, RootClus);
+  CopyMem (Asc, P + 0x52, 8);
+  Asc[8] = 0;
+  Print (L"    fstype@52:%a\n", Asc);
 
-  if ((Bps == Bs) && (FatSz > 0) && (NumFats > 0) && (NumFats < 8)) {
-    RootLba = (UINT64)Resv + (UINT64)NumFats * FatSz;
-    Status  = Bio->ReadBlocks (Bio, Bio->Media->MediaId, RootLba, Bs, P);
-    if (!EFI_ERROR (Status)) {
-      Print (L"    root@LBA%lu ascii:\n", RootLba);
-      DumpAscii (P, 128);
-      Print (L"\n");
-    } else {
-      Print (L"    root read FAIL %r\n", Status);
+  if ((Bps == 512) || (Bps == Bs)) {
+    if ((FatSz > 0) && (NumFats >= 1) && (NumFats <= 8)) {
+      RootLba = ((UINT64)Resv + (UINT64)NumFats * FatSz) * Bps / Bs;
+      Status  = Bio->ReadBlocks (Bio, Bio->Media->MediaId, RootLba, Bs, P);
+      if (!EFI_ERROR (Status)) {
+        Print (L"    root@%lu: ", RootLba);
+        DumpAscii (P, 64);
+        Print (L"\n");
+      }
     }
   }
 
@@ -128,7 +164,7 @@ DumpBpb (
 }
 
 //
-// Dump whole-disk GPT header + entries p33..p38 (zero-based idx 32..37).
+// GPT header + entries p33..p39 from the whole-disk handle.
 //
 STATIC
 VOID
@@ -156,8 +192,16 @@ DumpGpt (
   }
 
   Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, 1, Bs, Hdr);
-  if (EFI_ERROR (Status) || (CompareMem (Hdr, "EFI PART", 8) != 0)) {
-    Print (L"  GPT header invalid (st=%r sig=%02x%02x)\n", Status, Hdr[0], Hdr[1]);
+  if (EFI_ERROR (Status)) {
+    Print (L"  GPT hdr read FAIL %r\n", Status);
+    FreePool (Hdr);
+    return;
+  }
+
+  if (CompareMem (Hdr, "EFI PART", 8) != 0) {
+    Print (L"  GPT hdr BAD sig: ");
+    DumpAscii (Hdr, 8);
+    Print (L"\n");
     FreePool (Hdr);
     return;
   }
@@ -165,10 +209,12 @@ DumpGpt (
   EntryLba = *(UINT64 *)(Hdr + 0x48);
   Num      = *(UINT32 *)(Hdr + 0x50);
   Esz      = *(UINT32 *)(Hdr + 0x58);
-  Print (
-    L"  GPT: %d entries x %d B, array@LBA%lu\n",
-    Num, Esz, EntryLba
-    );
+  Print (L"  GPT OK: %d x %d B @LBA%lu\n", Num, Esz, EntryLba);
+
+  if ((Esz == 0) || (Esz > 1024) || (Num > 128)) {
+    FreePool (Hdr);
+    return;
+  }
 
   Arr = AllocatePool (Bs * 4);
   if (Arr == NULL) {
@@ -178,9 +224,9 @@ DumpGpt (
 
   Status = Disk->ReadBlocks (Disk, Disk->Media->MediaId, EntryLba, Bs * 4, Arr);
   if (EFI_ERROR (Status)) {
-    Print (L"  GPT array read FAIL %r\n", Status);
+    Print (L"  GPT arr read FAIL %r\n", Status);
   } else {
-    for (i = 32; (i < Num) && (i < 38); i++) {
+    for (i = 32; (i < Num) && (i < 39); i++) {
       E = Arr + (UINTN)i * Esz;
       if (*(UINT64 *)E == 0) {
         continue;
@@ -199,7 +245,7 @@ DumpGpt (
 }
 
 //
-// Raw block-level view: BlockIo handles >= 1GiB, BPB dumps, GPT.
+// Raw block view of everything big.
 //
 STATIC
 VOID
@@ -213,11 +259,17 @@ DeepDiag (
   EFI_HANDLE             *Handles;
   EFI_BLOCK_IO_PROTOCOL  *Bio;
   UINT64                 Cap;
+  UINT64                 MaxCap;
   EFI_BLOCK_IO_PROTOCOL  *Disk;
+  UINT32                 PartNum;
+  UINT64                 PartStart;
+  UINT64                 PartSize;
+  BOOLEAN                GotPart;
 
   Count   = 0;
   Handles = NULL;
   Disk    = NULL;
+  MaxCap  = 0;
 
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
@@ -243,20 +295,26 @@ DeepDiag (
       continue;
     }
 
-    Print (
-      L"  [%d] bs=%d last=%lu cap=%dMB\n",
-      i, Bio->Media->BlockSize, Bio->Media->LastBlock, (UINT32)(Cap >> 20)
-      );
+    GotPart = GetPartitionInfo (Handles[i], &PartNum, &PartStart, &PartSize);
+    if (GotPart) {
+      Print (
+        L"  [%d] part#%d start=%lu cap=%dMB\n",
+        i, PartNum, PartStart, (UINT32)(Cap >> 20)
+        );
+    } else {
+      Print (L"  [%d] DISK cap=%dMB bs=%d\n", i, (UINT32)(Cap >> 20), Bio->Media->BlockSize);
+    }
 
-    if (Cap >= (100ULL << 30)) {
-      Disk = Bio;
-    } else if (Cap <= (16ULL << 30)) {
-      DumpBpb (Bio);
+    DumpBpb (Bio);
+
+    if (Cap > MaxCap) {
+      MaxCap = Cap;
+      Disk   = Bio;
     }
   }
 
   if (Disk != NULL) {
-    Print (L"Whole-disk GPT:\n");
+    Print (L"Whole-disk GPT (cap=%dMB):\n", (UINT32)(MaxCap >> 20));
     DumpGpt (Disk);
   }
 
@@ -353,7 +411,7 @@ ParkWithSummary (
 
   gST->ConOut->ClearScreen (gST->ConOut);
   gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK));
-  Print (L"==== DIAG v4: SFS + BLOCK VIEW ====\n\n");
+  Print (L"==== DIAG v5: PART MAP ====\n\n");
 
   gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK));
   Print (L"SFS volumes: %d\n", mVolCount);
@@ -372,12 +430,11 @@ ParkWithSummary (
     Print (L"\n  BOOTAA64: %s\n", mInfo[i].BootFile);
   }
 
-  Print (L"\n-- raw block view --\n");
+  Print (L"\n-- block view --\n");
   DeepDiag ();
 
   gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_RED, EFI_BLACK));
-  Print (L"\nNO BOOTAA64 found. Parked.\n");
-  Print (L"Power off with 10s power button when photographed.\n");
+  Print (L"\nNO BOOTAA64. Parked.\n");
 
   for ( ; ; ) {
     gBS->Stall (1000000);
