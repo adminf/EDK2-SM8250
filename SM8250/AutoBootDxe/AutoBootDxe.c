@@ -12,6 +12,7 @@
 
 #include <Uefi.h>
 #include <Library/UefiLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/DebugLib.h>
