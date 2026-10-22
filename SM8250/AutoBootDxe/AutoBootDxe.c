@@ -1,8 +1,10 @@
 /** @file
-  AutoBootDxe - Automatically load \EFI\BOOT\BOOTAA64.EFI from the first
-  SimpleFileSystem volume as soon as it becomes available, with on-screen
-  status output. Works around BdsDxe falling back to the FrontPage menu
-  without attempting boot.
+  AutoBootDxe - diagnostics edition.
+
+  Loads \EFI\BOOT\BOOTAA64.EFI from the first SimpleFileSystem volume that
+  has it. On failure: clears the screen, prints a full diagnostic summary
+  (volume count, per-volume root dir listing, per-step status) and parks
+  forever so the result is easy to photograph.
 
   Copyright (c) 2026, enuma WoA project. All rights reserved.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -18,10 +20,24 @@
 #include <Guid/EventGroup.h>
 
 STATIC BOOLEAN mAttempted = FALSE;
+STATIC BOOLEAN mParked    = FALSE;
+
+#define MAXVOL 8
+
+typedef struct {
+  CHAR16  Root[16][32];
+  UINTN   RootCount;
+  CHAR16  BootFile[64];   // L"OK" or the error
+  BOOLEAN OpenVolFail;
+  CHAR16  OpenVolErr[24];
+} VOL_INFO;
+
+STATIC VOL_INFO  mInfo[MAXVOL];
+STATIC UINTN     mVolCount = 0;
 
 STATIC
 VOID
-ListRootDir (
+ExamineVolume (
   IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs,
   IN UINTN                            Index
   )
@@ -31,41 +47,111 @@ ListRootDir (
   EFI_FILE_PROTOCOL *File;
   CHAR16            Buf[64];
   UINTN             Size;
-  UINTN             Shown;
+
+  if (Index >= MAXVOL) {
+    return;
+  }
+
+  mInfo[Index].BootFile[0] = 0;
 
   Status = Sfs->OpenVolume (Sfs, &Root);
   if (EFI_ERROR (Status)) {
+    mInfo[Index].OpenVolFail = TRUE;
+    UnicodeSPrint (mInfo[Index].OpenVolErr, sizeof (mInfo[Index].OpenVolErr), L"%r", Status);
     return;
   }
 
+  mInfo[Index].OpenVolFail = FALSE;
+
+  //
+  // root dir listing
+  //
   Status = Root->Open (Root, &File, L".", EFI_FILE_MODE_READ, 0);
-  if (EFI_ERROR (Status)) {
-    Print (L"[AutoBoot] vol %d: cannot open root dir = %r\n", Index, Status);
-    Root->Close (Root);
-    return;
+  if (!EFI_ERROR (Status)) {
+    mInfo[Index].RootCount = 0;
+    for ( ; ; ) {
+      Size = sizeof (Buf);
+      Status = File->Read (File, &Size, Buf);
+      if (EFI_ERROR (Status) || (Size == 0)) {
+        break;
+      }
+      if (Buf[0] == L'.') {
+        continue;
+      }
+      Buf[30] = 0;
+      UnicodeSPrint (
+        mInfo[Index].Root[mInfo[Index].RootCount],
+        sizeof (mInfo[Index].Root[0]),
+        L"%s",
+        Buf
+        );
+      mInfo[Index].RootCount++;
+      if (mInfo[Index].RootCount >= 16) {
+        break;
+      }
+    }
+    File->Close (File);
   }
 
-  Print (L"[AutoBoot] vol %d root dir:\n", Index);
-  Shown = 0;
-  for ( ; ; ) {
-    Size = sizeof (Buf);
-    Status = File->Read (File, &Size, Buf);
-    if (EFI_ERROR (Status) || (Size == 0)) {
-      break;
-    }
-    if (Buf[0] == L'.') {
+  Status = Root->Open (
+                   Root,
+                   &File,
+                   L"\\EFI\\BOOT\\BOOTAA64.EFI",
+                   EFI_FILE_MODE_READ,
+                   0
+                   );
+  if (EFI_ERROR (Status)) {
+    UnicodeSPrint (mInfo[Index].BootFile, sizeof (mInfo[Index].BootFile), L"NOT FOUND (%r)", Status);
+  } else {
+    File->Close (File);
+    UnicodeSPrint (mInfo[Index].BootFile, sizeof (mInfo[Index].BootFile), L"OK");
+  }
+
+  Root->Close (Root);
+}
+
+STATIC
+VOID
+ParkWithSummary (
+  VOID
+  )
+{
+  UINTN  i, j;
+
+  mParked = TRUE;
+
+  gST->ConOut->ClearScreen (gST->ConOut);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK));
+  Print (L"==== AutoBoot DIAGNOSTIC SUMMARY ====\n\n");
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK));
+  Print (L"FAT volumes mounted: %d\n\n", mVolCount);
+
+  for (i = 0; i < mVolCount && i < MAXVOL; i++) {
+    Print (L"Volume %d:\n", i);
+    if (mInfo[i].OpenVolFail) {
+      Print (L"  OpenVolume FAILED: %s\n", mInfo[i].OpenVolErr);
       continue;
     }
-    Buf[31] = 0;
-    Print (L"    %s\n", Buf);
-    if (++Shown >= 12) {
-      Print (L"    ...\n");
-      break;
+    Print (L"  root dir (%d entries):\n", mInfo[i].RootCount);
+    for (j = 0; j < mInfo[i].RootCount; j++) {
+      Print (L"    [%02d] %s\n", j, mInfo[i].Root[j]);
     }
+    Print (L"  \\EFI\\BOOT\\BOOTAA64.EFI : %s\n", mInfo[i].BootFile);
+    Print (L"\n");
   }
 
-  File->Close (File);
-  Root->Close (Root);
+  if (mAttempted) {
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK));
+    Print (L"A boot attempt was made (see log above the menu).\n");
+  } else {
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_RED, EFI_BLACK));
+    Print (L"NO volume contained \\EFI\\BOOT\\BOOTAA64.EFI.\n");
+  }
+
+  Print (L"\nParked. Power off with 10s power button when photographed.\n");
+  for ( ; ; ) {
+    gBS->Stall (1000000);
+  }
 }
 
 STATIC
@@ -80,10 +166,12 @@ TryBootAllVolumes (
   UINTN                            Count;
   EFI_HANDLE                       *Handles;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs;
-  EFI_FILE_PROTOCOL                *Root;
-  EFI_FILE_PROTOCOL                *File;
   EFI_DEVICE_PATH_PROTOCOL         *FileDp;
   EFI_HANDLE                       ImageHandle;
+
+  if (mAttempted || mParked) {
+    return;
+  }
 
   Count   = 0;
   Handles = NULL;
@@ -98,8 +186,14 @@ TryBootAllVolumes (
     return;
   }
 
+  mVolCount = Count;
+  if (mVolCount > MAXVOL) {
+    mVolCount = MAXVOL;
+  }
+
   Print (L"[AutoBoot] found %d FAT volume(s)\n", Count);
-  for (Index = 0; Index < Count; Index++) {
+
+  for (Index = 0; Index < Count && Index < MAXVOL; Index++) {
     Status = gBS->HandleProtocol (
                     Handles[Index],
                     &gEfiSimpleFileSystemProtocolGuid,
@@ -109,48 +203,42 @@ TryBootAllVolumes (
       continue;
     }
 
-    ListRootDir (Sfs, Index);
+    ExamineVolume (Sfs, Index);
+  }
 
-    Status = Sfs->OpenVolume (Sfs, &Root);
-    if (EFI_ERROR (Status)) {
-      Print (L"[AutoBoot] volume %d: OpenVolume = %r\n", Index, Status);
+  //
+  // second pass: boot from the first volume that has the loader
+  //
+  for (Index = 0; Index < Count && Index < MAXVOL; Index++) {
+    if (mInfo[Index].OpenVolFail || (mInfo[Index].BootFile[0] == 0)) {
       continue;
     }
-
-    Status = Root->Open (
-                     Root,
-                     &File,
-                     L"\\EFI\\BOOT\\BOOTAA64.EFI",
-                     EFI_FILE_MODE_READ,
-                     0
-                     );
-    if (EFI_ERROR (Status)) {
-      Print (L"[AutoBoot] volume %d: no \\EFI\\BOOT\\BOOTAA64.EFI (%r)\n", Index, Status);
-      Root->Close (Root);
+    if (StrStr (mInfo[Index].BootFile, L"OK") != mInfo[Index].BootFile) {
       continue;
     }
-
-    File->Close (File);
-    Root->Close (Root);
 
     FileDp = FileDevicePath (Handles[Index], L"\\EFI\\BOOT\\BOOTAA64.EFI");
     Status = gBS->LoadImage (TRUE, gImageHandle, FileDp, NULL, 0, &ImageHandle);
-    Print (L"[AutoBoot] LoadImage BOOTAA64.EFI (volume %d) = %r\n", Index, Status);
+    Print (L"[AutoBoot] LoadImage (volume %d) = %r\n", Index, Status);
     if (EFI_ERROR (Status)) {
+      mInfo[Index].BootFile[0] = 0;
+      UnicodeSPrint (mInfo[Index].BootFile, sizeof (mInfo[Index].BootFile), L"LOAD FAIL %r", Status);
       continue;
     }
 
     mAttempted = TRUE;
     Print (L"[AutoBoot] starting Windows Boot Manager...\n");
     Status = gBS->StartImage (ImageHandle, NULL, NULL);
-    Print (L"[AutoBoot] StartImage returned = %r\n", Status);
-    if (!EFI_ERROR (Status)) {
-      return;
-    }
+    UnicodeSPrint (mInfo[Index].BootFile, sizeof (mInfo[Index].BootFile), L"STARTED, returned %r", Status);
+    break;
   }
 
   if (Handles != NULL) {
     gBS->FreePool (Handles);
+  }
+
+  if (!mAttempted) {
+    ParkWithSummary ();
   }
 }
 
@@ -165,9 +253,6 @@ OnSfsNotify (
   TryBootAllVolumes ();
 }
 
-/**
-  Entry point: register a protocol notify on SimpleFileSystem.
-**/
 EFI_STATUS
 EFIAPI
 AutoBootDxeEntry (
@@ -195,9 +280,6 @@ AutoBootDxeEntry (
                   Event,
                   &Reg
                   );
-  //
-  // There may already be mounted volumes at our dispatch time.
-  //
   if (!EFI_ERROR (Status)) {
     TryBootAllVolumes ();
   }
