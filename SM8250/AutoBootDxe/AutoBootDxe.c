@@ -85,7 +85,7 @@ GetPartitionInfo (
 
   Found = FALSE;
   for (Node = Dp; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
-    if ((Node->Type == MEDIA_DEVICE_PATH) && (Node->SubType == MEDIA_PARTITION_DP) && (DevicePathNodeLength (Node) >= 42)) {
+    if ((Node->Type == MEDIA_DEVICE_PATH) && (Node->SubType == MEDIA_HARDDRIVE_DP) && (DevicePathNodeLength (Node) >= 42)) {
       P         = (UINT8 *)Node;
       *PartNum  = *(UINT32 *)(P + 4);
       *PartStart = *(UINT64 *)(P + 8);
