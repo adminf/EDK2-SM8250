@@ -21,6 +21,55 @@ STATIC BOOLEAN mAttempted = FALSE;
 
 STATIC
 VOID
+ListRootDir (
+  IN EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Sfs,
+  IN UINTN                            Index
+  )
+{
+  EFI_STATUS        Status;
+  EFI_FILE_PROTOCOL *Root;
+  EFI_FILE_PROTOCOL *File;
+  CHAR16            Buf[64];
+  UINTN             Size;
+  UINTN             Shown;
+
+  Status = Sfs->OpenVolume (Sfs, &Root);
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  Status = Root->Open (Root, &File, L".", EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    Print (L"[AutoBoot] vol %d: cannot open root dir = %r\n", Index, Status);
+    Root->Close (Root);
+    return;
+  }
+
+  Print (L"[AutoBoot] vol %d root dir:\n", Index);
+  Shown = 0;
+  for ( ; ; ) {
+    Size = sizeof (Buf);
+    Status = File->Read (File, &Size, Buf);
+    if (EFI_ERROR (Status) || (Size == 0)) {
+      break;
+    }
+    if (Buf[0] == L'.') {
+      continue;
+    }
+    Buf[31] = 0;
+    Print (L"    %s\n", Buf);
+    if (++Shown >= 12) {
+      Print (L"    ...\n");
+      break;
+    }
+  }
+
+  File->Close (File);
+  Root->Close (Root);
+}
+
+STATIC
+VOID
 EFIAPI
 TryBootAllVolumes (
   VOID
@@ -49,6 +98,7 @@ TryBootAllVolumes (
     return;
   }
 
+  Print (L"[AutoBoot] found %d FAT volume(s)\n", Count);
   for (Index = 0; Index < Count; Index++) {
     Status = gBS->HandleProtocol (
                     Handles[Index],
@@ -58,6 +108,8 @@ TryBootAllVolumes (
     if (EFI_ERROR (Status)) {
       continue;
     }
+
+    ListRootDir (Sfs, Index);
 
     Status = Sfs->OpenVolume (Sfs, &Root);
     if (EFI_ERROR (Status)) {
